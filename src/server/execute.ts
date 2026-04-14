@@ -123,17 +123,50 @@ Address the comment, POST a reply if needed, then continue working.
 4. If truly nothing to do, report briefly what you checked.
 {{/noTask}}`;
 
+/**
+ * Read wake context from the execution context.
+ *
+ * The Paperclip server passes wake metadata (taskId, commentId, wakeReason, etc.)
+ * in `ctx.context` (the contextSnapshot), NOT in `ctx.config` (the runtimeConfig).
+ * For backwards compatibility we also check `ctx.config` as a fallback.
+ */
+function readWakeContext(ctx: AdapterExecutionContext) {
+  const c = ctx.context ?? {};
+  const cfg = ctx.config ?? {};
+
+  const taskId =
+    cfgString(c.taskId) ??
+    cfgString(c.issueId) ??
+    cfgString(cfg.taskId);
+
+  const commentId =
+    cfgString(c.wakeCommentId) ??
+    cfgString(c.commentId) ??
+    cfgString(cfg.commentId);
+
+  const wakeReason =
+    cfgString(c.wakeReason) ??
+    cfgString(cfg.wakeReason);
+
+  // taskTitle/taskBody may be injected into config by the server
+  const taskTitle = cfgString(cfg.taskTitle) || "";
+  const taskBody = cfgString(cfg.taskBody) || "";
+
+  return { taskId, commentId, wakeReason, taskTitle, taskBody };
+}
+
 function buildPrompt(
   ctx: AdapterExecutionContext,
   config: Record<string, unknown>,
 ): string {
   const template = cfgString(config.promptTemplate) || DEFAULT_PROMPT_TEMPLATE;
 
-  const taskId = cfgString(ctx.config?.taskId);
-  const taskTitle = cfgString(ctx.config?.taskTitle) || "";
-  const taskBody = cfgString(ctx.config?.taskBody) || "";
-  const commentId = cfgString(ctx.config?.commentId) || "";
-  const wakeReason = cfgString(ctx.config?.wakeReason) || "";
+  const wake = readWakeContext(ctx);
+  const taskId = wake.taskId;
+  const taskTitle = wake.taskTitle;
+  const taskBody = wake.taskBody;
+  const commentId = wake.commentId || "";
+  const wakeReason = wake.wakeReason || "";
   const agentName = ctx.agent?.name || "Hermes Agent";
   const companyName = cfgString(ctx.config?.companyName) || "";
   const projectName = cfgString(ctx.config?.projectName) || "";
@@ -417,8 +450,13 @@ export async function execute(
   if (ctx.runId) env.PAPERCLIP_RUN_ID = ctx.runId;
   if ((ctx as any).authToken && !env.PAPERCLIP_API_KEY)
     env.PAPERCLIP_API_KEY = (ctx as any).authToken;
-  const taskId = cfgString(ctx.config?.taskId);
-  if (taskId) env.PAPERCLIP_TASK_ID = taskId;
+
+  // Propagate wake context as environment variables so the agent's
+  // skill scripts can detect why they were woken.
+  const wake = readWakeContext(ctx);
+  if (wake.taskId) env.PAPERCLIP_TASK_ID = wake.taskId;
+  if (wake.wakeReason) env.PAPERCLIP_WAKE_REASON = wake.wakeReason;
+  if (wake.commentId) env.PAPERCLIP_WAKE_COMMENT_ID = wake.commentId;
 
   const userEnv = config.env as Record<string, string> | undefined;
   if (userEnv && typeof userEnv === "object") {
